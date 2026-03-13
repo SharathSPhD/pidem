@@ -22,8 +22,13 @@ node_modules/
 .next/
 out/
 
-# Data (downloaded raw files)
+# Data (downloaded raw files and generated DB)
 backend/data/raw/
+backend/data/*.db
+
+# Test results
+test-results/
+frontend/test-results/
 
 # NIM cache
 nim-cache/
