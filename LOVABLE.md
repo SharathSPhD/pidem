@@ -60,6 +60,22 @@ No env vars are required for a basic run; SQLite and included data are enough.
 
 Do **not** gitignore `backend/data/*.db` or `backend/data/raw/` if you want a one-click port to Lovable or other hosts.
 
+## Why "Backend offline" when opening the app from Lovable (HTTPS)
+
+The app is served from **HTTPS** (e.g. `https://lovable.dev/...`). If the frontend calls **`http://localhost:8000`**, the browser can **block** the request as **mixed content** (HTTPS page loading an HTTP resource). So even with the backend running and `http://localhost:8000/` working in another tab, the Lovable-hosted app may still show "Backend offline".
+
+**Fix: expose your local backend over HTTPS and point the app at it**
+
+1. **Expose port 8000 with a tunnel** (pick one):
+   - **ngrok:** `ngrok http 8000` → use the `https://xxxx.ngrok-free.app` URL.
+   - **Cloudflare Tunnel:** `cloudflared tunnel --url http://localhost:8000` → use the provided `https://` URL.
+2. **Set the frontend API base** to that HTTPS URL:
+   - **Next.js:** in Lovable project settings or `.env`, set `NEXT_PUBLIC_API_URL=https://xxxx.ngrok-free.app` (or your tunnel URL).
+   - **Vite:** set `VITE_API_URL=https://xxxx.ngrok-free.app`.
+3. Restart/rebuild the frontend so it uses the new URL. The app will then call your backend via HTTPS and the browser will allow it.
+
+**Alternative:** Run the frontend **locally** (`npm run dev` in `frontend/`) and open `http://localhost:3000`. Then both app and API are on HTTP localhost and mixed content is not an issue.
+
 ## Port / Rebuild checklist for Lovable
 
 1. **Connect this repo** to a Lovable project (GitHub integration: connect project to this repository).

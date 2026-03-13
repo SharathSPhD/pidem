@@ -1,4 +1,8 @@
-const BASE = "http://localhost:8000";
+const BASE =
+  (typeof process !== "undefined" && process.env?.NEXT_PUBLIC_API_URL) ||
+  (typeof import.meta !== "undefined" && (import.meta as unknown as { env?: { VITE_API_URL?: string } }).env?.VITE_API_URL) ||
+  (typeof window !== "undefined" && (window as unknown as { __API_BASE__?: string }).__API_BASE__) ||
+  "http://localhost:8000";
 
 export async function apiGet<T>(path: string): Promise<T> {
   const res = await fetch(`${BASE}${path}`);
