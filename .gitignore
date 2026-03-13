@@ -22,9 +22,8 @@ node_modules/
 .next/
 out/
 
-# Data (downloaded raw files and generated DB)
-backend/data/raw/
-backend/data/*.db
+# Data: only ignore very large or regeneratable artifacts; keep raw + DB for Lovable/portability
+# (raw/ and *.db are committed so the repo is self-contained for porting to Lovable.dev)
 
 # Test results
 test-results/

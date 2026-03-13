@@ -56,7 +56,9 @@ NGC_API_KEY=your_ngc_key
 GITHUB_TOKEN=your_github_token
 ```
 
-### 3. Generate data
+### 3. Data (included for portability)
+
+The repo includes `backend/data/pidem.db` and `backend/data/raw/` so you can run without generating data. To regenerate or refresh:
 
 ```bash
 ./scripts/download_data.sh
@@ -78,6 +80,10 @@ npm run dev
 ```
 
 Open http://localhost:3000 to access the Module Hub.
+
+### Port to Lovable.dev
+
+Data and DB are committed so the repo is self-contained. See **[LOVABLE.md](LOVABLE.md)** for stack summary, build/run steps, and a port checklist so Lovable (or any builder) can rebuild the full project from this repo.
 
 ### 6. (Optional) Start NIM for LLM features
 
