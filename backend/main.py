@@ -16,7 +16,7 @@ app.add_middleware(
         "https://lovable.dev",
         "https://www.lovable.dev",
     ],
-    allow_origin_regex=r"https://(.*\.)?(lovable|entri|vercel)\.(app|dev)",
+    allow_origin_regex=r"https://(.*\.)?(lovable|entri|vercel|railway)\.(app|dev)",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
