@@ -1,0 +1,53 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - NIM_URL=http://nemotron-nim:8000
+    volumes:
+      - ./backend:/app
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+
+  celery-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    depends_on:
+      - redis
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - NIM_URL=http://nemotron-nim:8000
+    volumes:
+      - ./backend:/app
+    command: celery -A services.task_queue worker --loglevel=info --pool=solo
+
+  nemotron-nim:
+    image: nvcr.io/nim/nvidia/nvidia-nemotron-nano-9b-v2-dgx-spark:latest
+    runtime: nvidia
+    shm_size: "16gb"
+    ports:
+      - "8001:8000"
+    environment:
+      - NGC_API_KEY=${NGC_API_KEY}
+    volumes:
+      - ./nim-cache:/opt/nim/.cache
+
+volumes:
+  redis-data:
