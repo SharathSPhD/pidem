@@ -7,13 +7,27 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-import torch
-import torch.nn as nn
 from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import StandardScaler
 
+try:
+    import torch
+    import torch.nn as nn
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+
 from data.generator import build_all_datasets
 from utils.chart_helpers import fig_to_response
+
+
+def _safe_r2(actual: np.ndarray, pred: np.ndarray) -> float:
+    """R^2 that handles zero-variance actuals."""
+    ss_tot = float(np.sum((actual - actual.mean()) ** 2))
+    ss_res = float(np.sum((pred - actual) ** 2))
+    if ss_tot < 1e-10:
+        return 0.0
+    return 1 - ss_res / ss_tot
 
 
 FEATURE_COLS = [
@@ -50,74 +64,72 @@ def _prepare_data() -> tuple[pd.DataFrame, np.ndarray, StandardScaler, dict]:
     return df, X_scaled, scaler, {"feature_names": feature_names}
 
 
-class FeatureTokenizer(nn.Module):
-    """Linear projection of each feature to d_model."""
+if TORCH_AVAILABLE:
+    class FeatureTokenizer(nn.Module):
+        """Linear projection of each feature to d_model."""
 
-    def __init__(self, n_features: int, d_model: int):
-        super().__init__()
-        self.proj = nn.Linear(1, d_model)
-        self.n_features = n_features
+        def __init__(self, n_features: int, d_model: int):
+            super().__init__()
+            self.proj = nn.Linear(1, d_model)
+            self.n_features = n_features
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: (B, n_features) -> (B, n_features, d_model)
-        return self.proj(x.unsqueeze(-1))
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            return self.proj(x.unsqueeze(-1))
 
+    class FTTransformer(nn.Module):
+        """Simplified FT-Transformer: feature tokens + multi-head self-attention + [CLS] head."""
 
-class FTTransformer(nn.Module):
-    """Simplified FT-Transformer: feature tokens + multi-head self-attention + [CLS] head."""
+        def __init__(
+            self,
+            n_features: int,
+            d_model: int = 64,
+            n_heads: int = 4,
+            n_layers: int = 2,
+            dropout: float = 0.1,
+        ):
+            super().__init__()
+            self.n_features = n_features
+            self.d_model = d_model
 
-    def __init__(
-        self,
-        n_features: int,
-        d_model: int = 64,
-        n_heads: int = 4,
-        n_layers: int = 2,
-        dropout: float = 0.1,
-    ):
-        super().__init__()
-        self.n_features = n_features
-        self.d_model = d_model
+            self.tokenizer = FeatureTokenizer(n_features, d_model)
+            self.cls_token = nn.Parameter(torch.randn(1, 1, d_model) * 0.02)
 
-        self.tokenizer = FeatureTokenizer(n_features, d_model)
-        self.cls_token = nn.Parameter(torch.randn(1, 1, d_model) * 0.02)
+            encoder_layer = nn.TransformerEncoderLayer(
+                d_model=d_model,
+                nhead=n_heads,
+                dim_feedforward=d_model * 4,
+                dropout=dropout,
+                activation="gelu",
+                batch_first=True,
+                norm_first=False,
+            )
+            self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
+            self.head = nn.Sequential(
+                nn.Linear(d_model, d_model // 2),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(d_model // 2, 1),
+            )
 
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model,
-            nhead=n_heads,
-            dim_feedforward=d_model * 4,
-            dropout=dropout,
-            activation="gelu",
-            batch_first=True,
-            norm_first=False,
-        )
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
-        self.head = nn.Sequential(
-            nn.Linear(d_model, d_model // 2),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(d_model // 2, 1),
-        )
+        def forward(
+            self, x: torch.Tensor, return_attention: bool = False
+        ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+            B = x.shape[0]
+            tokens = self.tokenizer(x)
+            cls = self.cls_token.expand(B, -1, -1)
+            seq = torch.cat([cls, tokens], dim=1)
 
-    def forward(
-        self, x: torch.Tensor, return_attention: bool = False
-    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-        # x: (B, n_features)
-        B = x.shape[0]
-        tokens = self.tokenizer(x)  # (B, n_features, d_model)
-        cls = self.cls_token.expand(B, -1, -1)
-        seq = torch.cat([cls, tokens], dim=1)  # (B, 1 + n_features, d_model)
+            out = self.transformer(seq)
+            cls_out = out[:, 0, :]
+            pred = self.head(cls_out).squeeze(-1)
 
-        out = self.transformer(seq)  # (B, 1 + n_features, d_model)
-        cls_out = out[:, 0, :]
-        pred = self.head(cls_out).squeeze(-1)
-
-        if return_attention:
-            attn_weights = torch.softmax(out[:, 0, :] @ out[:, 1:, :].transpose(-2, -1), dim=-1)
-            return pred, attn_weights
-        return pred
+            if return_attention:
+                attn_weights = torch.softmax(out[:, 0, :] @ out[:, 1:, :].transpose(-2, -1), dim=-1)
+                return pred, attn_weights
+            return pred
 
 
-def _get_attention_weights(model: FTTransformer, X: np.ndarray) -> np.ndarray:
+def _get_attention_weights(model, X: np.ndarray) -> np.ndarray:
     """Extract CLS attention to feature tokens."""
     model.eval()
     with torch.no_grad():
@@ -126,7 +138,7 @@ def _get_attention_weights(model: FTTransformer, X: np.ndarray) -> np.ndarray:
         return attn.mean(0).numpy()
 
 
-def _get_feature_attention_heatmap(model: FTTransformer, X: np.ndarray) -> np.ndarray:
+def _get_feature_attention_heatmap(model, X: np.ndarray) -> np.ndarray:
     """Feature-feature attention (simplified: use token similarity)."""
     model.eval()
     with torch.no_grad():
@@ -149,6 +161,15 @@ def train_ft_transformer(
     Train FT-Transformer for volume prediction.
     Returns attention heatmap, CLS weights, comparison vs XGBoost/MLP/Linear, calibration.
     """
+    if not TORCH_AVAILABLE:
+        return {
+            "attention_heatmap": [],
+            "feature_names": [],
+            "cls_attention": [],
+            "comparison": {"error": "PyTorch not installed"},
+            "calibration": [],
+        }
+
     df, X, scaler, meta = _prepare_data()
     feature_names = meta["feature_names"]
     n_features = X.shape[1]
@@ -192,7 +213,7 @@ def train_ft_transformer(
         pred_val = model(x_val).numpy()
 
     ft_mae = float(np.mean(np.abs(np.expm1(pred_val) - np.expm1(y_val))))
-    ft_r2 = float(1 - np.sum((np.expm1(pred_val) - np.expm1(y_val)) ** 2) / np.sum((np.expm1(y_val) - np.expm1(y_val).mean()) ** 2))
+    ft_r2 = _safe_r2(np.expm1(y_val), np.expm1(pred_val))
 
     cls_attention = _get_attention_weights(model, X_val)
     feat_heatmap = _get_feature_attention_heatmap(model, X_val)
@@ -231,7 +252,7 @@ def train_ft_transformer(
             mlp_pred = mlp(torch.from_numpy(X_val.astype(np.float32))).squeeze().numpy()
         comparison["MLP"] = {
             "mae": float(np.mean(np.abs(np.expm1(mlp_pred) - np.expm1(y_val)))),
-            "r2": float(1 - np.sum((np.expm1(mlp_pred) - np.expm1(y_val)) ** 2) / np.sum((np.expm1(y_val) - np.expm1(y_val).mean()) ** 2)),
+            "r2": _safe_r2(np.expm1(y_val), np.expm1(mlp_pred)),
         }
 
         try:
@@ -241,7 +262,7 @@ def train_ft_transformer(
             xgb_pred = xgb_model.predict(X_val)
             comparison["XGBoost"] = {
                 "mae": float(np.mean(np.abs(np.expm1(xgb_pred) - np.expm1(y_val)))),
-                "r2": float(1 - np.sum((np.expm1(xgb_pred) - np.expm1(y_val)) ** 2) / np.sum((np.expm1(y_val) - np.expm1(y_val).mean()) ** 2)),
+                "r2": _safe_r2(np.expm1(y_val), np.expm1(xgb_pred)),
             }
         except ImportError:
             comparison["XGBoost"] = {"mae": None, "r2": None}
@@ -313,13 +334,20 @@ def build_cls_attention_figure(cls_attention: list, feature_names: list[str]) ->
 
 def build_comparison_figure(comparison: dict) -> dict:
     """Build model comparison bar chart."""
-    models = list(comparison.keys())
-    mae_vals = [comparison[m].get("mae") for m in models]
-    r2_vals = [comparison[m].get("r2") for m in models]
+    if "error" in comparison:
+        fig = go.Figure()
+        fig.add_annotation(text=comparison["error"], xref="paper", yref="paper",
+                           x=0.5, y=0.5, showarrow=False)
+        fig.update_layout(title="Model Comparison")
+        return fig_to_response(fig)
+
+    models = [m for m in comparison if isinstance(comparison[m], dict) and comparison[m].get("mae") is not None]
+    mae_vals = [comparison[m]["mae"] for m in models]
+    r2_vals = [comparison[m].get("r2", 0) or 0 for m in models]
 
     fig = go.Figure()
     fig.add_trace(go.Bar(name="MAE (L)", x=models, y=mae_vals))
-    fig.add_trace(go.Bar(name="R²", x=models, y=r2_vals))
+    fig.add_trace(go.Bar(name="R\u00b2", x=models, y=r2_vals))
     fig.update_layout(
         title="Model Comparison: FT-Transformer vs Baselines",
         barmode="group",

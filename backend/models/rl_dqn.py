@@ -31,19 +31,20 @@ class DQNResult:
     final_avg_reward: float
 
 
-class DQN(nn.Module):
-    def __init__(self, state_dim: int, n_actions: int, hidden: list[int]):
-        super().__init__()
-        layers = []
-        prev = state_dim
-        for h in hidden:
-            layers.extend([nn.Linear(prev, h), nn.ReLU()])
-            prev = h
-        layers.append(nn.Linear(prev, n_actions))
-        self.net = nn.Sequential(*layers)
+if TORCH_AVAILABLE:
+    class DQN(nn.Module):
+        def __init__(self, state_dim: int, n_actions: int, hidden: list[int]):
+            super().__init__()
+            layers = []
+            prev = state_dim
+            for h in hidden:
+                layers.extend([nn.Linear(prev, h), nn.ReLU()])
+                prev = h
+            layers.append(nn.Linear(prev, n_actions))
+            self.net = nn.Sequential(*layers)
 
-    def forward(self, x):
-        return self.net(x)
+        def forward(self, x):
+            return self.net(x)
 
 
 def _state_to_vec(idx: int) -> np.ndarray:
@@ -167,9 +168,9 @@ def train_dqn(
         },
         policy_comparison={
             "tabular_final_reward": tabular_result.final_avg_reward,
-            "dqn_final_reward": float(np.mean(training_curve[-50:])),
+            "dqn_final_reward": float(np.mean(training_curve[-50:])) if training_curve else 0.0,
             "policy_agreement": agreement,
         },
         n_episodes=300,
-        final_avg_reward=float(np.mean(training_curve[-50:])),
+        final_avg_reward=float(np.mean(training_curve[-50:])) if training_curve else 0.0,
     )

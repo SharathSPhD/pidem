@@ -93,7 +93,7 @@ def train_elasticity_model(
         raise ValueError("features DataFrame is required")
 
     X, y, feature_names = _prepare_features(features, station_type, date_range)
-    X_arr = np.asarray(X)
+    X_arr = np.asarray(X, dtype=np.float64)
 
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X_arr)
@@ -108,14 +108,15 @@ def train_elasticity_model(
     # Approximate standard errors via OLS-style formula
     n, p = X_with_const.shape
     resid = y - y_pred
-    mse = np.sum(resid**2) / (n - p)
+    dof = max(n - p, 1)
+    mse = np.sum(resid**2) / dof
     try:
         var_b = mse * np.linalg.inv(X_with_const.T @ X_with_const)
-        se = np.sqrt(np.diag(var_b))
+        se = np.sqrt(np.maximum(np.diag(var_b), 0))
     except np.linalg.LinAlgError:
         se = np.full(p + 1, np.nan)
 
-    t_crit = stats.t.ppf(0.975, n - p - 1)
+    t_crit = stats.t.ppf(0.975, max(n - p - 1, 1))
     ci_low = coef_raw - t_crit * se
     ci_high = coef_raw + t_crit * se
 
@@ -137,12 +138,16 @@ def train_elasticity_model(
 
     metrics = regression_metrics(y, y_pred)
 
-    # VIF
+    # VIF -- add intercept column (statsmodels requires it for correct VIF)
+    X_vif = np.column_stack([np.ones(X_arr.shape[0]), X_arr])
     vif_data = []
     for i, name in enumerate(feature_names):
         try:
-            vif = variance_inflation_factor(X_arr, i)
-            vif_data.append({"feature": name, "vif": round(float(vif), 2)})
+            vif = variance_inflation_factor(X_vif, i + 1)
+            if not np.isfinite(vif):
+                vif_data.append({"feature": name, "vif": None})
+            else:
+                vif_data.append({"feature": name, "vif": round(float(vif), 2)})
         except Exception:
             vif_data.append({"feature": name, "vif": None})
 
@@ -151,9 +156,12 @@ def train_elasticity_model(
     beta_ols, _, _, _ = lstsq(X_with_const, y, rcond=None)
     fitted = X_with_const @ beta_ols
     resid_ols = y - fitted
-    mse_ols = np.sum(resid_ols**2) / (n - p)
+    mse_ols = np.sum(resid_ols**2) / dof
     hat = np.diag(X_with_const @ np.linalg.pinv(X_with_const.T @ X_with_const) @ X_with_const.T)
-    cooks_d = (resid_ols**2 / (p * mse_ols)) * (hat / (1 - hat) ** 2)
+    hat = np.clip(hat, 0, 1 - 1e-10)
+    denom = p * max(mse_ols, 1e-12)
+    cooks_d = (resid_ols**2 / denom) * (hat / (1 - hat) ** 2)
+    cooks_d = np.where(np.isfinite(cooks_d), cooks_d, 0)
 
     # Figures
     fig_residual = _residual_plot(y, y_pred, resid)
@@ -201,9 +209,19 @@ def _residual_plot(y_true: np.ndarray, y_pred: np.ndarray, resid: np.ndarray) ->
 
 
 def _qq_plot(resid: np.ndarray) -> go.Figure:
-    resid_clean = resid[~np.isnan(resid)]
-    theoretical = stats.norm.ppf(np.linspace(0.01, 0.99, len(resid_clean)))
+    resid_clean = resid[np.isfinite(resid)]
     fig = go.Figure()
+
+    if len(resid_clean) < 2:
+        fig.add_annotation(
+            text="Not enough residuals for Q-Q plot",
+            xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False,
+            font=dict(size=14),
+        )
+        fig.update_layout(title="Q-Q Plot (Residuals vs Normal)", **LAYOUT_DEFAULTS)
+        return fig
+
+    theoretical = stats.norm.ppf(np.linspace(0.01, 0.99, len(resid_clean)))
     fig.add_trace(
         go.Scatter(
             x=theoretical,
@@ -213,7 +231,6 @@ def _qq_plot(resid: np.ndarray) -> go.Figure:
             name="Sample",
         )
     )
-    # Reference line
     q_min, q_max = theoretical.min(), theoretical.max()
     fig.add_trace(
         go.Scatter(
@@ -234,11 +251,21 @@ def _qq_plot(resid: np.ndarray) -> go.Figure:
 
 
 def _vif_bar_figure(vif_data: list[dict]) -> go.Figure:
+    VIF_CAP = 100
     names = [d["feature"] for d in vif_data]
-    vals = [d["vif"] if d["vif"] is not None else 0 for d in vif_data]
-    colors = ["#ea4335" if v and v > 10 else "#34a853" for v in vals]
+    vals = [min(d["vif"], VIF_CAP) if d["vif"] is not None else 0 for d in vif_data]
+    raw_vals = [d["vif"] for d in vif_data]
+    colors = ["#ea4335" if v > 10 else "#34a853" for v in vals]
+    labels = []
+    for v, raw in zip(vals, raw_vals):
+        if raw is None:
+            labels.append("N/A")
+        elif raw > VIF_CAP:
+            labels.append(f">{VIF_CAP}")
+        else:
+            labels.append(f"{v:.1f}")
     fig = go.Figure(
-        go.Bar(x=names, y=vals, marker_color=colors, text=[f"{v:.1f}" if v else "N/A" for v in vals], textposition="outside")
+        go.Bar(x=names, y=vals, marker_color=colors, text=labels, textposition="outside")
     )
     fig.add_hline(y=10, line_dash="dash", line_color="orange", annotation_text="VIF=10")
     fig.update_layout(
@@ -252,19 +279,36 @@ def _vif_bar_figure(vif_data: list[dict]) -> go.Figure:
 
 
 def _cooks_figure(cooks_d: np.ndarray) -> go.Figure:
-    fig = go.Figure(
-        go.Bar(
-            x=list(range(len(cooks_d))),
-            y=cooks_d,
-            marker_color=px.colors.sequential.Blues,
-            name="Cook's D",
+    fig = go.Figure()
+    n = len(cooks_d)
+    if n == 0:
+        fig.add_annotation(
+            text="No observations for Cook's distance",
+            xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False,
         )
+        fig.update_layout(title="Cook's Distance (Influential Points)", **LAYOUT_DEFAULTS)
+        return fig
+
+    threshold = max(4 / n, 0.01)
+    # Only plot top 500 observations sorted by Cook's D to keep JSON small
+    if n > 500:
+        top_idx = np.argsort(cooks_d)[-500:]
+        top_idx = np.sort(top_idx)
+        plot_x = top_idx.tolist()
+        plot_y = cooks_d[top_idx].tolist()
+        title_suffix = f" (top 500 of {n})"
+    else:
+        plot_x = list(range(n))
+        plot_y = cooks_d.tolist()
+        title_suffix = ""
+
+    fig.add_trace(
+        go.Bar(x=plot_x, y=plot_y, marker_color="#1a73e8", name="Cook's D")
     )
-    # Rule of thumb: 4/n or 1
-    threshold = max(4 / len(cooks_d), 0.01)
-    fig.add_hline(y=threshold, line_dash="dash", line_color="red", annotation_text=f"4/n={threshold:.3f}")
+    fig.add_hline(y=threshold, line_dash="dash", line_color="red",
+                  annotation_text=f"4/n={threshold:.3f}")
     fig.update_layout(
-        title="Cook's Distance (Influential Points)",
+        title=f"Cook's Distance (Influential Points){title_suffix}",
         xaxis_title="Observation",
         yaxis_title="Cook's D",
         **LAYOUT_DEFAULTS,

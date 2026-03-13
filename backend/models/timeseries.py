@@ -45,8 +45,11 @@ def decompose_stl(station_id: str, period: int = 7) -> dict[str, Any]:
     if len(y) < 2 * period + 1:
         return {"error": f"Need at least {2 * period + 1} points for STL", "figure": None}
 
-    stl = STL(y, period=period, seasonal=min(period * 2 - 1, 13))
-    res = stl.fit()
+    try:
+        stl = STL(y, period=period, seasonal=min(period * 2 - 1, 13))
+        res = stl.fit()
+    except Exception as e:
+        return {"error": f"STL decomposition failed: {e}", "figure": None}
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=y.index, y=res.observed, name="Observed", mode="lines"))
@@ -142,17 +145,20 @@ def train_prophet(
 
     df_prophet = pd.DataFrame({"ds": y.index, "y": y.values})
 
-    m = Prophet(
-        changepoint_prior_scale=changepoint_scale,
-        yearly_seasonality=True,
-        weekly_seasonality=True,
-    )
-    if holidays:
-        m.add_country_holidays(country_name="DE")
-    m.fit(df_prophet)
+    try:
+        m = Prophet(
+            changepoint_prior_scale=changepoint_scale,
+            yearly_seasonality=True,
+            weekly_seasonality=True,
+        )
+        if holidays:
+            m.add_country_holidays(country_name="DE")
+        m.fit(df_prophet)
 
-    future = m.make_future_dataframe(periods=horizon)
-    fcast = m.predict(future)
+        future = m.make_future_dataframe(periods=horizon)
+        fcast = m.predict(future)
+    except Exception as e:
+        return {"error": f"Prophet fitting failed: {e}", "figure": None}
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=df_prophet["ds"], y=df_prophet["y"], name="Historical", mode="lines"))
@@ -222,8 +228,11 @@ def train_lightgbm_lag(
     X = df[feature_cols]
     y_target = df["y"]
 
-    model = lgb.LGBMRegressor(n_estimators=100, random_state=42, verbosity=-1)
-    model.fit(X, y_target)
+    try:
+        model = lgb.LGBMRegressor(n_estimators=100, random_state=42, verbosity=-1)
+        model.fit(X, y_target)
+    except Exception as e:
+        return {"error": f"LightGBM training failed: {e}", "figure": None}
 
     # SHAP
     if shap is not None:
@@ -253,6 +262,8 @@ def train_lightgbm_lag(
         row["rolling_std_7"] = float(np.std(recent)) if len(recent) > 1 else 0.0
         X_last = pd.DataFrame([row])[feature_cols]
         pred = model.predict(X_last)[0]
+        if not np.isfinite(pred):
+            pred = hist[-1] if hist else 0.0
         preds.append(pred)
         hist.append(pred)
 

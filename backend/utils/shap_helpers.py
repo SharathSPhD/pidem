@@ -5,8 +5,14 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-import shap
 from sklearn.base import BaseEstimator
+
+try:
+    import shap
+    SHAP_AVAILABLE = True
+except ImportError:
+    shap = None  # type: ignore[assignment]
+    SHAP_AVAILABLE = False
 
 from utils.chart_helpers import LAYOUT_DEFAULTS
 
@@ -15,13 +21,15 @@ def compute_shap_values(
     model: BaseEstimator,
     X: pd.DataFrame | np.ndarray,
     feature_names: list[str] | None = None,
-) -> tuple[shap.Explanation, Any]:
+) -> tuple[Any, Any]:
     """
     Compute SHAP values using TreeExplainer for tree models or LinearExplainer for linear models.
 
     Returns:
         Tuple of (shap_values as Explanation object, explainer)
     """
+    if not SHAP_AVAILABLE:
+        raise ImportError("shap is not installed")
     if X is None or (hasattr(X, "__len__") and len(X) == 0):
         raise ValueError("X cannot be empty")
 
@@ -72,7 +80,7 @@ def compute_shap_values(
 
 
 def shap_waterfall_figure(
-    shap_values: shap.Explanation | np.ndarray,
+    shap_values: Any,
     feature_names: list[str],
     idx: int,
     base_value: float | None = None,
@@ -91,7 +99,7 @@ def shap_waterfall_figure(
     Returns:
         Plotly Figure
     """
-    if isinstance(shap_values, shap.Explanation):
+    if SHAP_AVAILABLE and isinstance(shap_values, shap.Explanation):
         vals = shap_values.values[idx]
         if base_value is None:
             base_value = float(shap_values.base_values[idx]) if hasattr(shap_values.base_values, "__getitem__") else float(shap_values.base_values)
@@ -141,7 +149,7 @@ def shap_waterfall_figure(
 
 
 def shap_beeswarm_figure(
-    shap_values: shap.Explanation | np.ndarray,
+    shap_values: Any,
     X: pd.DataFrame | np.ndarray,
     feature_names: list[str] | None = None,
     max_display: int = 15,
@@ -153,7 +161,7 @@ def shap_beeswarm_figure(
     Returns:
         Plotly Figure
     """
-    if isinstance(shap_values, shap.Explanation):
+    if SHAP_AVAILABLE and isinstance(shap_values, shap.Explanation):
         vals = np.asarray(shap_values.values)
     else:
         vals = np.asarray(shap_values)

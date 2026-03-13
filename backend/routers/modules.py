@@ -242,7 +242,7 @@ m03 = APIRouter(prefix="/api/m03", tags=["m03-ensembles"])
 class M03TrainRequest(BaseModel):
     n_estimators: int = 100
     learning_rate: float = 0.1
-    shap_sample: int = 100
+    shap_sample: int = 50
 
 
 @m03.post("/train")
@@ -294,7 +294,12 @@ def m03_train(req: M03TrainRequest):
                 name=feat, showlegend=False))
         fig_bee.update_layout(title="SHAP Beeswarm", xaxis_title="SHAP Value", template="plotly_white")
     except Exception:
-        fig_bee.add_annotation(text="SHAP not available", showarrow=False)
+        fig_bee.add_annotation(
+            text="SHAP library not available in this environment.<br>Install shap to see feature interaction effects.",
+            xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False,
+            font=dict(size=13, color="#64748b"),
+        )
+        fig_bee.update_layout(title="SHAP Beeswarm (unavailable)", template="plotly_white")
 
     return ChartsResponse(
         figures={"primary": _fig_json(fig_imp), "importance": _fig_json(fig_imp),
@@ -460,8 +465,14 @@ def m05_train(req: M05TrainRequest):
     from sklearn.ensemble import IsolationForest
 
     df = _get_daily()
-    stn = df["station_id"].unique()[0]
+    stations = df["station_id"].unique()
+    if len(stations) == 0:
+        return _error_response("No station data available", "m05")
+    stn = stations[0]
     sdf = df[df["station_id"] == stn].sort_values("date").copy()
+    if sdf.empty:
+        return _error_response(f"No data for station {stn}", "m05")
+    sdf = sdf.tail(180)
     sdf["vol_roll"] = sdf["volume_litres"].rolling(req.window_size, min_periods=1).mean()
     sdf["vol_std"] = sdf["volume_litres"].rolling(req.window_size, min_periods=1).std().fillna(0)
     sdf["ucl"] = sdf["vol_roll"] + 3 * sdf["vol_std"]
@@ -544,6 +555,12 @@ def m06_train(req: M06TrainRequest):
 
 def _inline_timeseries(req):
     df = _get_daily()
+    available = df["station_id"].unique()
+    if req.station_id not in available:
+        fallback = available[0] if len(available) > 0 else None
+        if fallback is None:
+            return ChartsResponse(metrics={"error": "No station data available"})
+        req.station_id = fallback
     sdf = df[df["station_id"] == req.station_id].sort_values("date").dropna(subset=["volume_litres"])
     if len(sdf) < 30:
         return ChartsResponse(metrics={"error": "Not enough data"})
@@ -602,17 +619,23 @@ def m07_train(req: M07TrainRequest):
     from utils.metrics import forecast_metrics
 
     df = _get_daily()
+    available = df["station_id"].unique()
+    if req.station_id not in available:
+        req.station_id = available[0] if len(available) > 0 else "STN_001"
     sdf = df[df["station_id"] == req.station_id].sort_values("date").dropna(subset=["volume_litres"]).copy()
 
     for lag in range(1, req.lags + 1):
         sdf[f"vol_lag_{lag}"] = sdf["volume_litres"].shift(lag)
     sdf = sdf.dropna()
 
+    if len(sdf) < 20:
+        return _error_response(f"Only {len(sdf)} rows after lag creation (need 20+)", "m07")
+
     feat_cols = [f"vol_lag_{i}" for i in range(1, req.lags + 1)]
     X = sdf[feat_cols].values
     y = sdf["volume_litres"].values
 
-    split = int(len(X) * 0.8)
+    split = max(int(len(X) * 0.8), 1)
     X_tr, X_te = X[:split], X[split:]
     y_tr, y_te = y[:split], y[split:]
 
@@ -668,7 +691,12 @@ class M08TrainRequest(BaseModel):
 @m08.post("/train")
 def m08_train(req: M08TrainRequest):
     df = _get_daily()
+    available = df["station_id"].unique()
+    if req.station_id not in available:
+        req.station_id = available[0] if len(available) > 0 else "STN_001"
     sdf = df[df["station_id"] == req.station_id].sort_values("date").dropna(subset=["volume_litres"])
+    if sdf.empty:
+        return _error_response("No data for this station", "m08")
     y = sdf["volume_litres"].values
     dates = sdf["date"].values
 
@@ -937,7 +965,7 @@ def m13_train(req: M13TrainRequest):
     try:
         from models.mlp import train_mlp
         result = train_mlp(
-            n_layers=req.n_layers, units_per_layer=req.units,
+            n_layers=req.n_layers, units_per_layer=[req.units] * req.n_layers,
             activation=req.activation, embedding_dim=req.embedding_dim,
         )
         figs = _serialize_figures(result.get("figures", {}))

@@ -27,9 +27,14 @@ class RunInfo:
 
 
 _runs: dict[str, RunInfo] = {}
+MAX_RUNS = 50
 
 
 def create_run(est_seconds: int = 30) -> RunInfo:
+    if len(_runs) >= MAX_RUNS:
+        oldest = sorted(_runs, key=lambda k: _runs[k].created_at)[: len(_runs) - MAX_RUNS + 1]
+        for k in oldest:
+            del _runs[k]
     run_id = f"run_{int(time.time())}_{uuid.uuid4().hex[:6]}"
     run = RunInfo(run_id=run_id, status=RunStatus.TRAINING, est_seconds=est_seconds)
     _runs[run_id] = run

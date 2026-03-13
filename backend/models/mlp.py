@@ -7,10 +7,15 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-import torch
-import torch.nn as nn
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import LabelEncoder, StandardScaler
+
+try:
+    import torch
+    import torch.nn as nn
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
 
 from data.generator import build_all_datasets
 from utils.chart_helpers import fig_to_response
@@ -53,41 +58,42 @@ def _prepare_data() -> tuple[torch.Tensor, torch.Tensor, np.ndarray, pd.DataFram
     )
 
 
-class MLPClassifier(nn.Module):
-    """MLP with station embedding and configurable architecture."""
+if TORCH_AVAILABLE:
+    class MLPClassifier(nn.Module):
+        """MLP with station embedding and configurable architecture."""
 
-    def __init__(
-        self,
-        n_stations: int,
-        embedding_dim: int,
-        n_layers: int,
-        units_per_layer: list[int],
-        activation: str,
-        n_features: int = 2,
-    ):
-        super().__init__()
-        self.n_stations = n_stations
-        self.embedding_dim = embedding_dim
-        self.n_layers = n_layers
+        def __init__(
+            self,
+            n_stations: int,
+            embedding_dim: int,
+            n_layers: int,
+            units_per_layer: list[int],
+            activation: str,
+            n_features: int = 2,
+        ):
+            super().__init__()
+            self.n_stations = n_stations
+            self.embedding_dim = embedding_dim
+            self.n_layers = n_layers
 
-        self.embedding = nn.Embedding(n_stations, embedding_dim)
-        in_dim = n_features + embedding_dim
+            self.embedding = nn.Embedding(n_stations, embedding_dim)
+            in_dim = n_features + embedding_dim
 
-        acts = {"relu": nn.ReLU, "tanh": nn.Tanh, "gelu": nn.GELU}
-        act_fn = acts.get(activation, nn.ReLU)
+            acts = {"relu": nn.ReLU, "tanh": nn.Tanh, "gelu": nn.GELU}
+            act_fn = acts.get(activation, nn.ReLU)
 
-        layers = []
-        for i, units in enumerate(units_per_layer[:n_layers]):
-            layers.append(nn.Linear(in_dim, units))
-            layers.append(act_fn())
-            in_dim = units
-        layers.append(nn.Linear(in_dim, 1))
-        self.mlp = nn.Sequential(*layers)
+            layers = []
+            for i, units in enumerate(units_per_layer[:n_layers]):
+                layers.append(nn.Linear(in_dim, units))
+                layers.append(act_fn())
+                in_dim = units
+            layers.append(nn.Linear(in_dim, 1))
+            self.mlp = nn.Sequential(*layers)
 
-    def forward(self, x_num: torch.Tensor, x_station: torch.Tensor) -> torch.Tensor:
-        emb = self.embedding(x_station)
-        x = torch.cat([x_num, emb], dim=1)
-        return self.mlp(x).squeeze(-1)
+        def forward(self, x_num: torch.Tensor, x_station: torch.Tensor) -> torch.Tensor:
+            emb = self.embedding(x_station)
+            x = torch.cat([x_num, emb], dim=1)
+            return self.mlp(x).squeeze(-1)
 
 
 def train_mlp(
@@ -101,6 +107,8 @@ def train_mlp(
     Train MLP for binary classification (price_gap > 0 -> competitive_zone).
     Returns decision boundary frames, gradient flow, embedding PCA, activation histograms, loss curve.
     """
+    if not TORCH_AVAILABLE:
+        raise ImportError("PyTorch is not installed")
     if units_per_layer is None:
         units_per_layer = [32, 16]
 

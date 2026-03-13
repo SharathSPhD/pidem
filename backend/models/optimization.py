@@ -43,10 +43,10 @@ def solve_pricing_lp(
 
     stations = df["station_id"].tolist()
     n = len(stations)
-    base_prices = df["our_price"].values
+    base_prices = np.maximum(df["our_price"].values, 1e-6)
     cogs = df["cogs"].values
     min_comp = df["min_comp_price"].values
-    base_vol = df["volume_litres"].values
+    base_vol = np.maximum(df["volume_litres"].values, 1e-6)
     elasticity = np.where(df["station_type"] == "motorway", -1.8,
                           np.where(df["station_type"] == "urban", -1.3, -0.9))
 
@@ -108,7 +108,10 @@ def _solve_lp(
     prob.solve(PULP_CBC_CMD(msg=0))
     status = "optimal" if prob.status == 1 else f"status_{prob.status}"
 
-    opt_prices = [p.varValue for p in prices]
+    opt_prices = [
+        float(p.varValue) if p.varValue is not None else float(base_prices[i])
+        for i, p in enumerate(prices)
+    ]
     price_recs = dict(zip(stations, opt_prices))
 
     # Shadow prices from constraints
@@ -133,7 +136,8 @@ def _solve_lp(
             prob2 += p2[i] >= min_comp[i] - 0.05
         prob2.solve(PULP_CBC_CMD(msg=0))
         if prob2.status == 1:
-            pp = [x.varValue for x in p2]
+            pp = [float(x.varValue) if x.varValue is not None else float(base_prices[i])
+                  for i, x in enumerate(p2)]
             tot_m = sum((pp[i] - cogs[i] / 100) * base_vol[i] * (pp[i] / base_prices[i]) ** elasticity[i]
                        for i in range(n))
             tot_v = sum(base_vol[i] * (pp[i] / base_prices[i]) ** elasticity[i] for i in range(n))
@@ -160,7 +164,8 @@ def _solve_lp(
                     prob3 += p3[i] >= min_comp[i] - 0.05
                 prob3.solve(PULP_CBC_CMD(msg=0))
                 if prob3.status == 1:
-                    pp = [x.varValue for x in p3]
+                    pp = [float(x.varValue) if x.varValue is not None else float(base_prices[i])
+                          for i, x in enumerate(p3)]
                     low_m = sum((pp[i] - cogs[i] / 100) * base_vol[i] * (pp[i] / base_prices[i]) ** elasticity[i]
                                 for i in range(n))
             pb2 = price_band + delta
@@ -176,7 +181,8 @@ def _solve_lp(
                 prob3 += p3[i] >= min_comp[i] - 0.05
             prob3.solve(PULP_CBC_CMD(msg=0))
             if prob3.status == 1:
-                pp = [x.varValue for x in p3]
+                pp = [float(x.varValue) if x.varValue is not None else float(base_prices[i])
+                      for i, x in enumerate(p3)]
                 high_m = sum((pp[i] - cogs[i] / 100) * base_vol[i] * (pp[i] / base_prices[i]) ** elasticity[i]
                              for i in range(n))
         sens[param] = (min(low_m, high_m, base_m), max(low_m, high_m, base_m))
